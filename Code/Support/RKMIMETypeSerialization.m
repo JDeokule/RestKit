@@ -23,6 +23,7 @@
 #import "RKSerialization.h"
 #import "RKLog.h"
 #import "RKURLEncodedSerialization.h"
+#import "RKNSJSONSerialization.h"
 
 // Define logging component
 #undef RKLogComponent
@@ -101,29 +102,13 @@
 }
 
 - (void)addRegistrationsForKnownSerializations
-{
-    Class serializationClass = nil;
-    
+{    
     // URL Encoded
     [self.registrations addObject:[[RKMIMETypeSerializationRegistration alloc] initWithMIMEType:RKMIMETypeFormURLEncoded
                                                                              serializationClass:[RKURLEncodedSerialization class]]];
     // JSON
-    NSArray *JSONSerializationClassNames = @[ @"RKNSJSONSerialization", @"RKJSONKitSerialization" ];
-    for (NSString *serializationClassName in JSONSerializationClassNames) {
-        serializationClass = NSClassFromString(serializationClassName);
-        if (serializationClass) {
-            RKLogInfo(@"JSON Serialization class '%@' detected: Registering for MIME Type '%@", serializationClassName, RKMIMETypeJSON);
-            [self.registrations addObject:[[RKMIMETypeSerializationRegistration alloc] initWithMIMEType:RKMIMETypeJSON
-                                                                                     serializationClass:serializationClass]];
-        }
-    }
-    
-    // XML
-//    parserClass = NSClassFromString(@"RKXMLParserXMLReader");
-//    if (parserClass) {
-//        [self setParserClass:parserClass forMIMEType:RKMIMETypeXML];
-//        [self setParserClass:parserClass forMIMEType:RKMIMETypeTextXML];
-//    }
+    [self.registrations addObject:[[RKMIMETypeSerializationRegistration alloc] initWithMIMEType:RKMIMETypeJSON
+                                                                             serializationClass:[RKNSJSONSerialization class]]];
 }
 
 #pragma mark - Public
@@ -148,7 +133,7 @@
 {
     NSArray *registrationsCopy = [[self sharedSerialization].registrations copy];
     for (RKMIMETypeSerializationRegistration *registration in registrationsCopy) {
-        if (registration.class == serializationClass) {
+        if (registration.serializationClass == serializationClass) {
             [[self sharedSerialization].registrations removeObject:registration];
         }
     }
@@ -161,6 +146,9 @@
 
 + (id)objectFromData:(NSData *)data MIMEType:(NSString *)MIMEType error:(NSError **)error
 {
+    NSParameterAssert(data);
+    NSParameterAssert(MIMEType);
+
     Class<RKSerialization> serializationClass = [self serializationClassForMIMEType:MIMEType];
     if (!serializationClass) {
         if (error) {
@@ -176,6 +164,8 @@
 
 + (id)dataFromObject:(id)object MIMEType:(NSString *)MIMEType error:(NSError **)error
 {
+    NSParameterAssert(object);
+    NSParameterAssert(MIMEType);
     Class<RKSerialization> serializationClass = [self serializationClassForMIMEType:MIMEType];
     if (!serializationClass) {
         if (error) {

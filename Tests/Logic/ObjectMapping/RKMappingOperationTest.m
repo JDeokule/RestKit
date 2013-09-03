@@ -37,6 +37,7 @@
 @property (nonatomic, strong) NSURL *url;
 @property (nonatomic, strong) NSString *boolString;
 @property (nonatomic, strong) NSNumber *boolNumber;
+@property (nonatomic, strong) NSNumber *number;
 @property (nonatomic, strong) NSDate *date;
 @property (nonatomic, strong) NSOrderedSet *orderedSet;
 @property (nonatomic, strong) NSArray *array;
@@ -167,6 +168,44 @@
     BOOL success = (operation.error == nil);
     assertThatBool(success, is(equalToBool(YES)));
     assertThat(object.boolString, is(equalTo(@"123")));
+}
+
+- (void)testShouldSuccessfullyMapLongIntegerStringsToNumbers
+{
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[TestMappable class]];
+    [mapping addPropertyMapping:[RKAttributeMapping attributeMappingFromKeyPath:@"numberString" toKeyPath:@"number"]];
+    TestMappable *object = [[TestMappable alloc] init];
+
+    NSData *data = [@"{\"numberString\":\"69726278940360707\"}" dataUsingEncoding:NSUTF8StringEncoding];
+    id deserializedObject = [RKMIMETypeSerialization objectFromData:data MIMEType:RKMIMETypeJSON error:nil];
+
+    RKMappingOperation *operation = [[RKMappingOperation alloc] initWithSourceObject:deserializedObject destinationObject:object mapping:mapping];
+    RKObjectMappingOperationDataSource *dataSource = [RKObjectMappingOperationDataSource new];
+    operation.dataSource = dataSource;
+    [operation start];
+    BOOL success = (operation.error == nil);
+    assertThatBool(success, is(equalToBool(YES)));
+    assertThatUnsignedLongLong([object.number unsignedLongLongValue], is(equalToUnsignedLongLong(69726278940360707)));
+    
+}
+
+- (void)testShouldSuccessfullyMapFloatingPointNumberStringsToNumbers
+{
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[TestMappable class]];
+    [mapping addPropertyMapping:[RKAttributeMapping attributeMappingFromKeyPath:@"numberString" toKeyPath:@"number"]];
+    TestMappable *object = [[TestMappable alloc] init];
+
+    NSData *data = [@"{\"numberString\":\"1234.5678\"}" dataUsingEncoding:NSUTF8StringEncoding];
+    id deserializedObject = [RKMIMETypeSerialization objectFromData:data MIMEType:RKMIMETypeJSON error:nil];
+
+    RKMappingOperation *operation = [[RKMappingOperation alloc] initWithSourceObject:deserializedObject destinationObject:object mapping:mapping];
+    RKObjectMappingOperationDataSource *dataSource = [RKObjectMappingOperationDataSource new];
+    operation.dataSource = dataSource;
+    [operation start];
+    BOOL success = (operation.error == nil);
+    assertThatBool(success, is(equalToBool(YES)));
+    assertThatDouble([object.number doubleValue], is(equalToDouble(1234.5678)));
+    
 }
 
 - (void)testShouldSuccessfullyMapPropertiesBeforeKeyPathAttributes
@@ -434,20 +473,57 @@
     RKObjectMapping *childMapping = [RKObjectMapping mappingForClass:[RKTestUser class]];
     [childMapping addAttributeMappingsFromArray:@[@"name"]];
     
-    RKEntityMapping *parentMapping = [RKObjectMapping mappingForClass:[RKTestUser class]];
+    RKObjectMapping *parentMapping = [RKObjectMapping mappingForClass:[RKTestUser class]];
     [parentMapping addAttributeMappingsFromArray:@[@"name"]];
     [parentMapping addPropertyMapping:[RKRelationshipMapping relationshipMappingFromKeyPath:@"children" toKeyPath:@"friends" withMapping:childMapping]];
     NSDictionary *mappingsDictionary = @{ @"parents": parentMapping };
     
     NSOperationQueue *operationQueue = [NSOperationQueue new];
     NSDictionary *JSON = [RKTestFixture parsedObjectWithContentsOfFixture:@"benchmark_parents_and_children.json"];
-    RKMapperOperation *mapper = [[RKMapperOperation alloc] initWithObject:JSON mappingsDictionary:mappingsDictionary];
+    RKMapperOperation *mapper = [[RKMapperOperation alloc] initWithRepresentation:JSON mappingsDictionary:mappingsDictionary];
     [operationQueue addOperation:mapper];
     [mapper cancel];
     [operationQueue waitUntilAllOperationsAreFinished];
     expect([mapper isCancelled]).to.equal(YES);
     expect(mapper.error).to.beNil();
     expect(mapper.mappingResult).to.beNil();
+}
+
+- (void)testMappingRootKeyToDictionary
+{
+    NSDictionary *representation = @{ @"MyObject": @{ @"ObjectAttribute1": @{} }, @"MyRootString": @"SomeString" };
+    RKObjectMapping *mapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    [mapping addAttributeMappingsFromDictionary:@{ @"MyRootString": @"MyRootString" }];
+    
+    RKObjectMappingOperationDataSource *dataSource = [RKObjectMappingOperationDataSource new];
+    RKMappingOperation *mappingOperation = [[RKMappingOperation alloc] initWithSourceObject:representation destinationObject:nil mapping:mapping];
+    mappingOperation.dataSource = dataSource;
+    BOOL success = [mappingOperation performMapping:nil];
+    expect(success).to.equal(YES);
+    expect([mappingOperation.destinationObject isKindOfClass:[NSMutableDictionary class]]).to.equal(YES);
+    expect([mappingOperation.destinationObject valueForKeyPath:@"MyRootString"]).to.equal(@"SomeString");
+}
+
+- (void)testThatOneToOneRelationshipOfHasManyDoesNotHaveIncorrectCollectionIndexMetadataKey
+{
+    NSDictionary *representation = @{ @"name": @"Blake", @"friend": @{ @"name": @"jeff" } };
+    RKObjectMapping *userMapping = [RKObjectMapping mappingForClass:[RKTestUser class]];
+    [userMapping addAttributeMappingsFromDictionary:@{ @"name": @"name", @"@metadata.mapping.collectionIndex": @"luckyNumber" }];
+    [userMapping addRelationshipMappingWithSourceKeyPath:@"friend" mapping:userMapping];
+
+    RKObjectMappingOperationDataSource *dataSource = [RKObjectMappingOperationDataSource new];
+    RKMappingOperation *mappingOperation = [[RKMappingOperation alloc] initWithSourceObject:representation destinationObject:nil mapping:userMapping];
+    mappingOperation.metadata = @{ @"mapping": @{ @"collectionIndex": @25 } };
+    mappingOperation.dataSource = dataSource;
+    BOOL success = [mappingOperation performMapping:nil];
+    expect(success).to.equal(YES);
+
+    RKTestUser *blake = mappingOperation.destinationObject;
+    expect(blake).notTo.beNil();
+    expect(blake.name).to.equal(@"Blake");
+    expect(blake.luckyNumber).to.equal(@25);
+    expect(blake.friend).notTo.beNil();
+    expect(blake.friend.luckyNumber).to.beNil();
 }
 
 @end

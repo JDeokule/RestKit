@@ -20,7 +20,7 @@
 
 #import "RKEntityMapping.h"
 #import "RKManagedObjectStore.h"
-#import "RKDynamicMappingMatcher.h"
+#import "RKObjectMappingMatcher.h"
 #import "RKPropertyInspector+CoreData.h"
 #import "RKLog.h"
 #import "RKRelationshipMapping.h"
@@ -36,24 +36,27 @@ NSString * const RKEntityIdentificationAttributesUserInfoKey = @"RKEntityIdentif
 
 static NSArray *RKEntityIdentificationAttributesFromUserInfoOfEntity(NSEntityDescription *entity)
 {
-    id userInfoValue = [[entity userInfo] valueForKey:RKEntityIdentificationAttributesUserInfoKey];
-    if (userInfoValue) {
-        NSArray *attributeNames = [userInfoValue isKindOfClass:[NSArray class]] ? userInfoValue : @[ userInfoValue ];
-        NSMutableArray *attributes = [NSMutableArray arrayWithCapacity:[attributeNames count]];
-        [attributeNames enumerateObjectsUsingBlock:^(NSString *attributeName, NSUInteger idx, BOOL *stop) {
-            if (! [attributeName isKindOfClass:[NSString class]]) {
-                [NSException raise:NSInvalidArgumentException format:@"Invalid value given in user info key '%@' of entity '%@': expected an `NSString` or `NSArray` of strings, instead got '%@' (%@)", RKEntityIdentificationAttributesUserInfoKey, [entity name], attributeName, [attributeName class]];
-            }
-            
-            NSAttributeDescription *attribute = [[entity attributesByName] valueForKey:attributeName];
-            if (! attribute) {
-                [NSException raise:NSInvalidArgumentException format:@"Invalid identifier attribute specified in user info key '%@' of entity '%@': no attribue was found with the name '%@'", RKEntityIdentificationAttributesUserInfoKey, [entity name], attributeName];
-            }
-            
-            [attributes addObject:attribute];
-        }];
-        return attributes;
-    }
+    do {
+        id userInfoValue = [[entity userInfo] valueForKey:RKEntityIdentificationAttributesUserInfoKey];
+        if (userInfoValue) {
+            NSArray *attributeNames = [userInfoValue isKindOfClass:[NSArray class]] ? userInfoValue : @[ userInfoValue ];
+            NSMutableArray *attributes = [NSMutableArray arrayWithCapacity:[attributeNames count]];
+            [attributeNames enumerateObjectsUsingBlock:^(NSString *attributeName, NSUInteger idx, BOOL *stop) {
+                if (! [attributeName isKindOfClass:[NSString class]]) {
+                    [NSException raise:NSInvalidArgumentException format:@"Invalid value given in user info key '%@' of entity '%@': expected an `NSString` or `NSArray` of strings, instead got '%@' (%@)", RKEntityIdentificationAttributesUserInfoKey, [entity name], attributeName, [attributeName class]];
+                }
+                
+                NSAttributeDescription *attribute = [[entity attributesByName] valueForKey:attributeName];
+                if (! attribute) {
+                    [NSException raise:NSInvalidArgumentException format:@"Invalid identifier attribute specified in user info key '%@' of entity '%@': no attribue was found with the name '%@'", RKEntityIdentificationAttributesUserInfoKey, [entity name], attributeName];
+                }
+                
+                [attributes addObject:attribute];
+            }];
+            return attributes;
+        }
+        entity = [entity superentity];
+    } while (entity);
     
     return nil;
 }
@@ -137,16 +140,19 @@ static BOOL entityIdentificationInferenceEnabled = YES;
 
 @synthesize identificationAttributes = _identificationAttributes;
 
-+ (id)mappingForClass:(Class)objectClass
++ (instancetype)mappingForClass:(Class)objectClass
 {
     @throw [NSException exceptionWithName:NSInternalInconsistencyException
                                    reason:[NSString stringWithFormat:@"You must provide a managedObjectStore. Invoke mappingForClass:inManagedObjectStore: instead."]
                                  userInfo:nil];
 }
 
-+ (id)mappingForEntityForName:(NSString *)entityName inManagedObjectStore:(RKManagedObjectStore *)managedObjectStore
++ (instancetype)mappingForEntityForName:(NSString *)entityName inManagedObjectStore:(RKManagedObjectStore *)managedObjectStore
 {
+    NSParameterAssert(entityName);
+    NSParameterAssert(managedObjectStore);
     NSEntityDescription *entity = [[managedObjectStore.managedObjectModel entitiesByName] objectForKey:entityName];
+    NSAssert(entity, @"Unable to find an Entity with the name '%@' in the managed object model", entityName);
     return [[self alloc] initWithEntity:entity];
 }
 
@@ -158,6 +164,7 @@ static BOOL entityIdentificationInferenceEnabled = YES;
     self = [self initWithClass:objectClass];
     if (self) {
         self.entity = entity;
+        self.discardsInvalidObjectsOnInsert = NO;
         if ([RKEntityMapping isEntityIdentificationInferenceEnabled]) self.identificationAttributes = RKIdentificationAttributesInferredFromEntity(entity);
     }
 
@@ -177,8 +184,11 @@ static BOOL entityIdentificationInferenceEnabled = YES;
 - (id)copyWithZone:(NSZone *)zone
 {
     RKEntityMapping *copy = [super copyWithZone:zone];
+    copy.entity = self.entity;
     copy.identificationAttributes = self.identificationAttributes;
     copy.identificationPredicate = self.identificationPredicate;
+    copy.deletionPredicate = self.deletionPredicate;
+    copy.mutableConnections = [NSMutableArray array];
     
     for (RKConnectionDescription *connection in self.connections) {
         [copy addConnection:[connection copy]];
@@ -232,7 +242,7 @@ static BOOL entityIdentificationInferenceEnabled = YES;
 - (void)addConnectionForRelationship:(id)relationshipOrName connectedBy:(id)connectionSpecifier
 {
     NSRelationshipDescription *relationship = [relationshipOrName isKindOfClass:[NSRelationshipDescription class]] ? relationshipOrName : [[self.entity relationshipsByName] valueForKey:relationshipOrName];
-    NSAssert(relationship, @"No relatiobship was found named '%@' in the '%@' entity", relationshipOrName, [self.entity name]);
+    NSAssert(relationship, @"No relationship was found named '%@' in the '%@' entity", relationshipOrName, [self.entity name]);
     RKConnectionDescription *connection = nil;
     if ([connectionSpecifier isKindOfClass:[NSString class]]) {
         NSString *sourceAttribute = connectionSpecifier;
@@ -275,12 +285,29 @@ static BOOL entityIdentificationInferenceEnabled = YES;
     NSArray *components = [keyPath componentsSeparatedByString:@"."];
     Class propertyClass = self.objectClass;
     for (NSString *property in components) {
-        propertyClass = [[RKPropertyInspector sharedInspector] classForPropertyNamed:property ofClass:propertyClass];
+        propertyClass = [[RKPropertyInspector sharedInspector] classForPropertyNamed:property ofClass:propertyClass isPrimitive:nil];
         if (! propertyClass) propertyClass = [[RKPropertyInspector sharedInspector] classForPropertyNamed:property ofEntity:self.entity];
         if (! propertyClass) break;
     }
 
     return propertyClass;
+}
+
+- (void)setModificationAttribute:(NSAttributeDescription *)modificationAttribute
+{
+    if (modificationAttribute && ![self.entity.properties containsObject:modificationAttribute]) [NSException raise:NSInvalidArgumentException format:@"The attribute given is not a property of the '%@' entity.", [self.entity name]];
+    _modificationAttribute = modificationAttribute;
+}
+
+- (void)setModificationAttributeForName:(NSString *)attributeName
+{
+    if (attributeName) {
+        NSAttributeDescription *attribute = [[self.entity attributesByName] objectForKey:attributeName];
+        if (!attribute) [NSException raise:NSInvalidArgumentException format:@"No attribute with the name '%@' was found in the '%@' entity.", attributeName, self.entity.name];
+        self.modificationAttribute = attribute;
+    } else {
+        self.modificationAttribute = nil;
+    }
 }
 
 + (void)setEntityIdentificationInferenceEnabled:(BOOL)enabled
@@ -292,5 +319,24 @@ static BOOL entityIdentificationInferenceEnabled = YES;
 {
     return entityIdentificationInferenceEnabled;
 }
+
+@end
+
+@implementation RKEntityMapping (Deprecations)
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
+
+- (NSString *)modificationKey
+{
+    return self.modificationAttribute.name;
+}
+
+- (void)setModificationKey:(NSString *)modificationKey
+{
+    [self setModificationAttributeForName:modificationKey];
+}
+
+#pragma clang diagnostic pop
 
 @end

@@ -47,23 +47,24 @@
     
     // Configure logging from the environment variable. See RKLog.h for details
     RKLogConfigureFromEnvironment();
-}
-
-@end
-
-@implementation SenTestCase (MethodSwizzling)
-
-- (void)swizzleMethod:(SEL)aOriginalMethod
-              inClass:(Class)aOriginalClass
-           withMethod:(SEL)aNewMethod
-            fromClass:(Class)aNewClass
-         executeBlock:(void (^)(void))aBlock
-{
-    Method originalMethod = class_getClassMethod(aOriginalClass, aOriginalMethod);
-    Method mockMethod = class_getInstanceMethod(aNewClass, aNewMethod);
-    method_exchangeImplementations(originalMethod, mockMethod);
-    aBlock();
-    method_exchangeImplementations(mockMethod, originalMethod);
+    
+    // Configure the Test Factory to use a specific model file
+    [RKTestFactory defineFactory:RKTestFactoryDefaultNamesManagedObjectStore withBlock:^id {
+        NSString *storePath = [RKApplicationDataDirectory() stringByAppendingPathComponent:RKTestFactoryDefaultStoreFilename];
+        NSURL *modelURL = [[RKTestFixture fixtureBundle] URLForResource:@"Data Model" withExtension:@"mom"];
+        NSManagedObjectModel *model = [[NSManagedObjectModel alloc] initWithContentsOfURL:modelURL];
+        RKManagedObjectStore *managedObjectStore = [[RKManagedObjectStore alloc] initWithManagedObjectModel:model];
+        NSError *error;
+        NSPersistentStore *persistentStore = [managedObjectStore addSQLitePersistentStoreAtPath:storePath fromSeedDatabaseAtPath:nil withConfiguration:nil options:nil error:&error];
+        if (persistentStore) {
+            BOOL success = [managedObjectStore resetPersistentStores:&error];
+            if (! success) {
+                RKLogError(@"Failed to reset persistent store: %@", error);
+            }
+        }
+        
+        return managedObjectStore;
+    }];
 }
 
 @end

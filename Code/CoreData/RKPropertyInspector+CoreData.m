@@ -29,16 +29,22 @@
 #undef RKLogComponent
 #define RKLogComponent RKlcl_cRestKitCoreData
 
+@interface RKPropertyInspector ()
+@property (nonatomic, assign) dispatch_queue_t queue;
+@property (nonatomic, strong) NSMutableDictionary *inspectionCache;
+@end
+
 @implementation RKPropertyInspector (CoreData)
 
-- (NSDictionary *)propertyNamesAndClassesForEntity:(NSEntityDescription *)entity
+- (NSDictionary *)propertyInspectionForEntity:(NSEntityDescription *)entity
 {
-    NSMutableDictionary *propertyNamesAndTypes = [_propertyNamesToTypesCache objectForKey:[entity name]];
-    if (propertyNamesAndTypes) {
-        return propertyNamesAndTypes;
-    }
+    __block NSMutableDictionary *entityInspection;
+    dispatch_sync(self.queue, ^{
+        entityInspection = [self.inspectionCache objectForKey:[entity name]];
+    });
+    if (entityInspection) return entityInspection;
 
-    propertyNamesAndTypes = [NSMutableDictionary dictionary];
+    entityInspection = [NSMutableDictionary dictionary];
     for (NSString *name in [entity attributesByName]) {
         NSAttributeDescription *attributeDescription = [[entity attributesByName] valueForKey:name];
         if ([attributeDescription attributeValueClassName]) {
@@ -46,7 +52,10 @@
             if ([cls isSubclassOfClass:[NSNumber class]] && [attributeDescription attributeType] == NSBooleanAttributeType) {
                 cls = objc_getClass("NSCFBoolean") ?: objc_getClass("__NSCFBoolean") ?: cls;
             }
-            [propertyNamesAndTypes setValue:cls forKey:name];
+            NSDictionary *propertyInspection = @{ RKPropertyInspectionNameKey: name,
+                                                  RKPropertyInspectionKeyValueCodingClassKey: cls,
+                                                  RKPropertyInspectionIsPrimitiveKey: @(NO) };
+            [entityInspection setValue:propertyInspection forKey:name];
 
         } else if ([attributeDescription attributeType] == NSTransformableAttributeType &&
                    ![name isEqualToString:@"_mapkit_hasPanoramaID"]) {
@@ -56,11 +65,17 @@
             Class managedObjectClass = objc_getClass(className);
 
             objc_property_t prop = class_getProperty(managedObjectClass, propertyName);
-
-            const char *attr = property_getAttributes(prop);
-            Class destinationClass = RKKeyValueCodingClassFromPropertyAttributes(attr);
-            if (destinationClass) {
-                [propertyNamesAndTypes setObject:destinationClass forKey:name];
+            
+            // Property is not defined in the Core Data model -- we cannot infer any details about the destination type
+            if (prop) {
+                const char *attr = property_getAttributes(prop);
+                Class destinationClass = RKKeyValueCodingClassFromPropertyAttributes(attr);
+                if (destinationClass) {
+                    NSDictionary *propertyInspection = @{ RKPropertyInspectionNameKey: name,
+                                                          RKPropertyInspectionKeyValueCodingClassKey: destinationClass,
+                                                          RKPropertyInspectionIsPrimitiveKey: @(NO) };
+                    [entityInspection setObject:propertyInspection forKey:name];
+                }
             }
         }
     }
@@ -68,40 +83,63 @@
     for (NSString *name in [entity relationshipsByName]) {
         NSRelationshipDescription *relationshipDescription = [[entity relationshipsByName] valueForKey:name];
         if ([relationshipDescription isToMany]) {
-            [propertyNamesAndTypes setValue:[NSSet class] forKey:name];
+            if ([relationshipDescription isOrdered]) {
+                NSDictionary *propertyInspection = @{ RKPropertyInspectionNameKey: name,
+                                                      RKPropertyInspectionKeyValueCodingClassKey: [NSOrderedSet class],
+                                                      RKPropertyInspectionIsPrimitiveKey: @(NO) };
+                [entityInspection setObject:propertyInspection forKey:name];
+            } else {
+                NSDictionary *propertyInspection = @{ RKPropertyInspectionNameKey: name,
+                                                      RKPropertyInspectionKeyValueCodingClassKey: [NSSet class],
+                                                      RKPropertyInspectionIsPrimitiveKey: @(NO) };
+                [entityInspection setObject:propertyInspection forKey:name];
+            }
         } else {
             NSEntityDescription *destinationEntity = [relationshipDescription destinationEntity];
             Class destinationClass = NSClassFromString([destinationEntity managedObjectClassName]);
-            [propertyNamesAndTypes setValue:destinationClass forKey:name];
+            if (! destinationClass) {
+                RKLogWarning(@"Retrieved `Nil` value for class named '%@': This likely indicates that the class is invalid or does not exist in the current target.", [destinationEntity managedObjectClassName]);
+            }
+            NSDictionary *propertyInspection = @{ RKPropertyInspectionNameKey: name,
+                                                  RKPropertyInspectionKeyValueCodingClassKey: destinationClass ?: [NSNull null],
+                                                  RKPropertyInspectionIsPrimitiveKey: @(NO) };
+            [entityInspection setObject:propertyInspection forKey:name];
         }
     }
 
-    [_propertyNamesToTypesCache setObject:propertyNamesAndTypes forKey:[entity name]];
-    RKLogDebug(@"Cached property names and types for Entity '%@': %@", entity, propertyNamesAndTypes);
-    return propertyNamesAndTypes;
+    dispatch_barrier_async(self.queue, ^{
+        [self.inspectionCache setObject:entityInspection forKey:[entity name]];
+        RKLogDebug(@"Cached property inspection for Entity '%@': %@", entity, entityInspection);
+    });
+    return entityInspection;
 }
 
 - (Class)classForPropertyNamed:(NSString *)propertyName ofEntity:(NSEntityDescription *)entity
 {
-    return [[self propertyNamesAndClassesForEntity:entity] valueForKey:propertyName];
+    NSDictionary *entityInspection = [self propertyInspectionForEntity:entity];
+    NSDictionary *propertyInspection = [entityInspection objectForKey:propertyName];
+    return [propertyInspection objectForKey:RKPropertyInspectionKeyValueCodingClassKey];
 }
 
 @end
 
 @interface NSManagedObject (RKPropertyInspection)
-- (Class)rk_classForPropertyAtKeyPath:(NSString *)keyPath;
+- (Class)rk_classForPropertyAtKeyPath:(NSString *)keyPath isPrimitive:(BOOL *)isPrimitive;
 @end
 
 @implementation NSManagedObject (RKPropertyInspection)
 
-- (Class)rk_classForPropertyAtKeyPath:(NSString *)keyPath
+- (Class)rk_classForPropertyAtKeyPath:(NSString *)keyPath isPrimitive:(BOOL *)isPrimitive
 {
     NSArray *components = [keyPath componentsSeparatedByString:@"."];
-    Class propertyClass = [self class];
+    Class currentPropertyClass = [self class];
+    Class propertyClass = nil;
     for (NSString *property in components) {
+        if (isPrimitive) *isPrimitive = NO; // Core Data does not enable you to model primitives
         propertyClass = [[RKPropertyInspector sharedInspector] classForPropertyNamed:property ofEntity:[self entity]];
-        propertyClass = propertyClass ?: [[RKPropertyInspector sharedInspector] classForPropertyNamed:property ofClass:propertyClass];
+        propertyClass = propertyClass ?: [[RKPropertyInspector sharedInspector] classForPropertyNamed:property ofClass:currentPropertyClass isPrimitive:isPrimitive];
         if (! propertyClass) break;
+        currentPropertyClass = propertyClass;
     }
     
     return propertyClass;

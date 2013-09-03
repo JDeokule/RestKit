@@ -126,8 +126,23 @@
 
     if (transformedValue) {
         RKLogDebug(@"Serialized %@ value at keyPath to %@ (%@)", NSStringFromClass([value class]), NSStringFromClass([transformedValue class]), value);
-        [operation.destinationObject setValue:transformedValue forKey:keyPath];
+        [operation.destinationObject setValue:transformedValue forKeyPath:keyPath];
     }
+}
+
+- (BOOL)mappingOperation:(RKMappingOperation *)operation shouldSetValue:(id)value forKeyPath:(NSString *)keyPath usingMapping:(RKPropertyMapping *)propertyMapping
+{
+    NSArray *keyPathComponents = [keyPath componentsSeparatedByString:@"."];
+    id currentValue = operation.destinationObject;
+    for (NSString *key in keyPathComponents) {
+        id value = [currentValue valueForKey:key];
+        if (value == nil) {
+            value = [NSMutableDictionary new];
+            [currentValue setValue:value forKey:key];
+        }
+        currentValue = value;
+    }
+    return YES;
 }
 
 @end

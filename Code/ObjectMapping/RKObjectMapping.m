@@ -18,6 +18,7 @@
 //  limitations under the License.
 //
 
+#import <CoreFoundation/CoreFoundation.h>
 #import "RKObjectMapping.h"
 #import "RKRelationshipMapping.h"
 #import "RKPropertyInspector.h"
@@ -30,12 +31,72 @@ typedef NSString * (^RKSourceToDesinationKeyTransformationBlock)(RKObjectMapping
 
 // Constants
 NSString * const RKObjectMappingNestingAttributeKeyName = @"<RK_NESTING_ATTRIBUTE>";
-static NSUInteger RKObjectMappingMaximumInverseMappingRecursionDepth = 100;
 
 // Private declaration
 NSDate *RKDateFromStringWithFormatters(NSString *dateString, NSArray *formatters);
 
 static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyTransformationBlock = nil;
+
+@interface RKObjectMapping (Copying)
+- (void)copyPropertiesFromMapping:(RKObjectMapping *)mapping;
+@end
+
+@interface RKMappingInverter : NSObject
+@property (nonatomic, strong) RKObjectMapping *mapping;
+@property (nonatomic, strong) NSMutableDictionary *invertedMappings;
+
+- (id)initWithMapping:(RKObjectMapping *)mapping;
+- (RKObjectMapping *)inverseMappingWithPredicate:(BOOL (^)(RKPropertyMapping *propertyMapping))predicate;
+@end
+
+@implementation RKMappingInverter
+
+- (id)initWithMapping:(RKObjectMapping *)mapping
+{
+    self = [self init];
+    if (self) {
+        self.mapping = mapping;
+        self.invertedMappings = [NSMutableDictionary dictionary];
+    }
+    return self;
+}
+
+- (RKObjectMapping *)invertMapping:(RKObjectMapping *)mapping withPredicate:(BOOL (^)(RKPropertyMapping *propertyMapping))predicate
+{
+    // Use an NSValue to obtain a non-copied key into our inversed mappings dictionary
+    NSValue *dictionaryKey = [NSValue valueWithNonretainedObject:mapping];
+    RKObjectMapping *inverseMapping = [self.invertedMappings objectForKey:dictionaryKey];
+    if (inverseMapping) return inverseMapping;
+    
+    inverseMapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
+    [self.invertedMappings setObject:inverseMapping forKey:dictionaryKey];
+    [inverseMapping copyPropertiesFromMapping:mapping];
+    
+    for (RKAttributeMapping *attributeMapping in mapping.attributeMappings) {
+        if (predicate && !predicate(attributeMapping)) continue;
+        [inverseMapping addPropertyMapping:[RKAttributeMapping attributeMappingFromKeyPath:attributeMapping.destinationKeyPath toKeyPath:attributeMapping.sourceKeyPath]];
+    }
+    
+    for (RKRelationshipMapping *relationshipMapping in mapping.relationshipMappings) {
+        RKObjectMapping *mapping = (RKObjectMapping *) relationshipMapping.mapping;
+        if (! [mapping isKindOfClass:[RKObjectMapping class]]) {
+            RKLogWarning(@"Unable to generate inverse mapping for relationship '%@': %@ relationships cannot be inversed.", relationshipMapping.sourceKeyPath, NSStringFromClass([mapping class]));
+            continue;
+        }
+        if (predicate && !predicate(relationshipMapping)) continue;
+        RKMapping *inverseRelationshipMapping = [self invertMapping:mapping withPredicate:predicate];
+        if (inverseRelationshipMapping) [inverseMapping addPropertyMapping:[RKRelationshipMapping relationshipMappingFromKeyPath:relationshipMapping.destinationKeyPath toKeyPath:relationshipMapping.sourceKeyPath withMapping:inverseRelationshipMapping]];
+    }
+    
+    return inverseMapping;
+}
+
+- (RKObjectMapping *)inverseMappingWithPredicate:(BOOL (^)(RKPropertyMapping *propertyMapping))predicate
+{
+    return [self invertMapping:self.mapping withPredicate:predicate];
+}
+
+@end
 
 @interface RKPropertyMapping ()
 @property (nonatomic, weak, readwrite) RKObjectMapping *objectMapping;
@@ -51,13 +112,20 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
 
 @implementation RKObjectMapping
 
-+ (id)mappingForClass:(Class)objectClass
++ (instancetype)mappingForClass:(Class)objectClass
 {
     return [[self alloc] initWithClass:objectClass];
 }
 
-+ (id)requestMapping
++ (RKObjectMapping *)requestMapping
 {
+    if (! [self isEqual:[RKObjectMapping class]]) {
+        @throw [NSException exceptionWithName:NSInternalInconsistencyException
+                                       reason:[NSString stringWithFormat:@"`%@` is not meant to be invoked on `%@`. You probably want to invoke `[RKObjectMapping requestMapping]`.",
+                                               NSStringFromSelector(_cmd),
+                                               NSStringFromClass(self)]
+                                     userInfo:nil];
+    }
     return [self mappingForClass:[NSMutableDictionary class]];
 }
 
@@ -77,21 +145,26 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
     return self;
 }
 
+- (void)copyPropertiesFromMapping:(RKObjectMapping *)mapping
+{
+    self.setDefaultValueForMissingAttributes = mapping.setDefaultValueForMissingAttributes;
+    self.setNilForMissingRelationships = mapping.setNilForMissingRelationships;
+    self.forceCollectionMapping = mapping.forceCollectionMapping;
+    self.performKeyValueValidation = mapping.performKeyValueValidation;
+    self.dateFormatters = mapping.dateFormatters;
+    self.preferredDateFormatter = mapping.preferredDateFormatter;
+    self.sourceToDestinationKeyTransformationBlock = self.sourceToDestinationKeyTransformationBlock;
+}
+
 - (id)copyWithZone:(NSZone *)zone
 {
     RKObjectMapping *copy = [[[self class] allocWithZone:zone] init];
     copy.objectClass = self.objectClass;
-    copy.setDefaultValueForMissingAttributes = self.setDefaultValueForMissingAttributes;
-    copy.setNilForMissingRelationships = self.setNilForMissingRelationships;
-    copy.forceCollectionMapping = self.forceCollectionMapping;
-    copy.performKeyValueValidation = self.performKeyValueValidation;
-    copy.dateFormatters = self.dateFormatters;
-    copy.preferredDateFormatter = self.preferredDateFormatter;
+    [copy copyPropertiesFromMapping:self];
     copy.mutablePropertyMappings = [NSMutableArray new];
-    copy.sourceToDestinationKeyTransformationBlock = self.sourceToDestinationKeyTransformationBlock;
 
     for (RKPropertyMapping *propertyMapping in self.propertyMappings) {
-        [copy addPropertyMapping:propertyMapping];
+        [copy addPropertyMapping:[propertyMapping copy]];
     }
 
     return copy;
@@ -111,6 +184,7 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
 {
     NSMutableDictionary *dictionary = [NSMutableDictionary dictionaryWithCapacity:[self.propertyMappings count]];
     for (RKPropertyMapping *propertyMapping in self.propertyMappings) {
+        if (! propertyMapping.sourceKeyPath) continue;
         [dictionary setObject:propertyMapping forKey:propertyMapping.sourceKeyPath];
     }
     
@@ -121,6 +195,7 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
 {
     NSMutableDictionary *dictionary = [NSMutableDictionary dictionaryWithCapacity:[self.propertyMappings count]];
     for (RKPropertyMapping *propertyMapping in self.propertyMappings) {
+        if (! propertyMapping.destinationKeyPath) continue;
         [dictionary setObject:propertyMapping forKey:propertyMapping.destinationKeyPath];
     }
     
@@ -178,11 +253,6 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
 {
     return [NSString stringWithFormat:@"<%@:%p objectClass=%@ propertyMappings=%@>",
             NSStringFromClass([self class]), self, NSStringFromClass(self.objectClass), self.propertyMappings];
-}
-
-- (id)mappingForKeyPath:(NSString *)keyPath
-{
-    return [self mappingForSourceKeyPath:keyPath];
 }
 
 - (id)mappingForSourceKeyPath:(NSString *)sourceKeyPath
@@ -264,29 +334,15 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
     }
 }
 
-- (RKObjectMapping *)inverseMappingAtDepth:(NSInteger)depth
+- (instancetype)inverseMappingWithPropertyMappingsPassingTest:(BOOL (^)(RKPropertyMapping *propertyMapping))predicate
 {
-    NSAssert(depth < RKObjectMappingMaximumInverseMappingRecursionDepth, @"Exceeded max recursion level in inverseMapping. This is likely due to a loop in the serialization graph. To break this loop, specify one-way relationships by setting serialize to NO in mapKeyPath:toRelationship:withObjectMapping:serialize:");
-    RKObjectMapping *inverseMapping = [RKObjectMapping mappingForClass:[NSMutableDictionary class]];
-    for (RKAttributeMapping *attributeMapping in self.attributeMappings) {
-        [inverseMapping addPropertyMapping:[RKAttributeMapping attributeMappingFromKeyPath:attributeMapping.destinationKeyPath toKeyPath:attributeMapping.sourceKeyPath]];
-    }
-
-    for (RKRelationshipMapping *relationshipMapping in self.relationshipMappings) {
-        RKMapping *mapping = relationshipMapping.mapping;
-        if (! [mapping isKindOfClass:[RKObjectMapping class]]) {
-            RKLogWarning(@"Unable to generate inverse mapping for relationship '%@': %@ relationships cannot be inversed.", relationshipMapping.sourceKeyPath, NSStringFromClass([mapping class]));
-            continue;
-        }
-        [inverseMapping addPropertyMapping:[RKRelationshipMapping relationshipMappingFromKeyPath:relationshipMapping.destinationKeyPath toKeyPath:relationshipMapping.sourceKeyPath withMapping:[(RKObjectMapping *)mapping inverseMappingAtDepth:depth+1]]];
-    }
-
-    return inverseMapping;
+    RKMappingInverter *mappingInverter = [[RKMappingInverter alloc] initWithMapping:self];
+    return [mappingInverter inverseMappingWithPredicate:predicate];
 }
 
-- (RKObjectMapping *)inverseMapping
+- (instancetype)inverseMapping
 {
-    return [self inverseMappingAtDepth:0];
+    return [self inverseMappingWithPropertyMappingsPassingTest:nil];
 }
 
 - (void)addAttributeMappingFromKeyOfRepresentationToAttribute:(NSString *)attributeName
@@ -294,9 +350,9 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
     [self addPropertyMapping:[RKAttributeMapping attributeMappingFromKeyPath:RKObjectMappingNestingAttributeKeyName toKeyPath:attributeName]];
 }
 
-- (RKAttributeMapping *)attributeMappingForKeyOfRepresentation
+- (void)addAttributeMappingToKeyOfRepresentationFromAttribute:(NSString *)attributeName
 {
-    return [self mappingForKeyPath:RKObjectMappingNestingAttributeKeyName];
+    [self addPropertyMapping:[RKAttributeMapping attributeMappingFromKeyPath:attributeName toKeyPath:RKObjectMappingNestingAttributeKeyName]];
 }
 
 - (RKAttributeMapping *)mappingForAttribute:(NSString *)attributeKey
@@ -328,7 +384,7 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
 
 - (Class)classForProperty:(NSString *)propertyName
 {
-    return [[RKPropertyInspector sharedInspector] classForPropertyNamed:propertyName ofClass:self.objectClass];
+    return [[RKPropertyInspector sharedInspector] classForPropertyNamed:propertyName ofClass:self.objectClass isPrimitive:nil];
 }
 
 - (Class)classForKeyPath:(NSString *)keyPath
@@ -336,7 +392,7 @@ static RKSourceToDesinationKeyTransformationBlock defaultSourceToDestinationKeyT
     NSArray *components = [keyPath componentsSeparatedByString:@"."];
     Class propertyClass = self.objectClass;
     for (NSString *property in components) {
-        propertyClass = [[RKPropertyInspector sharedInspector] classForPropertyNamed:property ofClass:propertyClass];
+        propertyClass = [[RKPropertyInspector sharedInspector] classForPropertyNamed:property ofClass:propertyClass isPrimitive:nil];
         if (! propertyClass) break;
     }
 
@@ -441,7 +497,8 @@ static NSFormatter *preferredDateFormatter = nil;
 {
     if (!preferredDateFormatter) {
         RKISO8601DateFormatter *iso8601Formatter = [[RKISO8601DateFormatter alloc] init];
-        iso8601Formatter.defaultTimeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+        iso8601Formatter.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+        iso8601Formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
         iso8601Formatter.includeTime = YES;
         preferredDateFormatter = iso8601Formatter;
     }

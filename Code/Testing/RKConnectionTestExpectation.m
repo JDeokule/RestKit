@@ -18,7 +18,8 @@
 //  limitations under the License.
 //
 
-#import <CoreData/CoreData.h>
+#ifdef _COREDATADEFINES_H
+
 #import "RKConnectionTestExpectation.h"
 #import "RKObjectUtilities.h"
 
@@ -30,7 +31,7 @@
 
 @implementation RKConnectionTestExpectation
 
-+ (id)expectationWithRelationshipName:(NSString *)relationshipName attributes:(NSDictionary *)attributes value:(id)value
++ (instancetype)expectationWithRelationshipName:(NSString *)relationshipName attributes:(NSDictionary *)attributes value:(id)value
 {
     return [[self alloc] initWithRelationshipName:relationshipName attributes:attributes value:value];
 }
@@ -64,3 +65,5 @@
 }
 
 @end
+
+#endif

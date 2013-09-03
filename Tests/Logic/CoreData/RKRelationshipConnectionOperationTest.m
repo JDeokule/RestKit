@@ -11,6 +11,7 @@
 #import "RKCat.h"
 #import "RKHouse.h"
 #import "RKResident.h"
+#import "RKChild.h"
 #import "RKRelationshipConnectionOperation.h"
 #import "RKFetchRequestManagedObjectCache.h"
 
@@ -40,7 +41,7 @@
     [mapping addConnectionForRelationship:@"favoriteCat" connectedBy:@{ @"favoriteCatID": @"railsID" } ];
     RKConnectionDescription *connection = [mapping connectionForRelationship:@"favoriteCat"];
     RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
-    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connection:connection managedObjectCache:managedObjectCache];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
     [operation start];
     assertThat(human.favoriteCat, is(equalTo(asia)));
 }
@@ -60,7 +61,7 @@
     [mapping addConnectionForRelationship:@"cats" connectedBy:@"sex"];
     RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
     RKConnectionDescription *connection = [mapping connectionForRelationship:@"cats"];
-    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connection:connection managedObjectCache:managedObjectCache];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
     [operation start];
     assertThat(human.cats, hasCountOf(2));
     assertThat(human.cats, hasItems(asia, lola, nil));
@@ -78,16 +79,16 @@
     roy.sex = @"male";
 
     human.cats = [NSSet setWithObjects:asia, lola, roy, nil];
-    assertThat(human.cats, isNot(empty()));
+    assertThat(human.cats, isNot(isEmpty()));
 
     // No cats with a sex of 'invalid'
     RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
     [mapping addConnectionForRelationship:@"cats" connectedBy:@{ @"sex": @"sex" }];
     RKConnectionDescription *connection = [mapping connectionForRelationship:@"cats"];
     RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
-    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connection:connection managedObjectCache:managedObjectCache];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
     [operation start];
-    assertThat(human.cats, is(empty()));
+    assertThat(human.cats, isEmpty());
 }
 
 #pragma mark - Key Path Connections
@@ -105,7 +106,7 @@
     tenant.residence = house;
 
     RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
-    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:tenant connection:connection managedObjectCache:managedObjectCache];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:tenant connections:@[ connection ] managedObjectCache:managedObjectCache];
     [operation start];
 
     expect(tenant.landlord).to.equal(homeowner);
@@ -126,7 +127,7 @@
     house.residents = [NSSet setWithObjects:resident1, resident2, nil];
 
     RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
-    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connection:connection managedObjectCache:managedObjectCache];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
     [operation start];
 
     NSSet *expectedRoommates = [NSSet setWithObjects:resident1, resident2, nil];
@@ -155,7 +156,7 @@
     human.housesResidedAt = [NSOrderedSet orderedSetWithObjects:house1, house2, nil];
 
     RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
-    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connection:connection managedObjectCache:managedObjectCache];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
     [operation start];
 
     NSSet *expectedFriends = [NSSet setWithObjects:homeowner1, homeowner2, homeowner3, homeowner4, nil];
@@ -185,7 +186,7 @@
     human.housesResidedAt = [NSOrderedSet orderedSetWithObjects:house1, house2, nil];
 
     RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
-    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connection:connection managedObjectCache:managedObjectCache];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
     [operation start];
 
     NSOrderedSet *expectedFriends = [NSOrderedSet orderedSetWithObjects:homeowner1, homeowner2, homeowner3, homeowner4, nil];
@@ -201,10 +202,167 @@
     RKHuman *human = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:nil];
 
     RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
-    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connection:connection managedObjectCache:managedObjectCache];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
     [operation start];
 
     expect([human.friendsInTheOrderWeMet set]).to.beEmpty();
+}
+
+- (void)testConnectingToSubentities
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    NSEntityDescription *childEntity = [NSEntityDescription entityForName:@"Child" inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
+    NSRelationshipDescription *relationship = [childEntity relationshipsByName][@"friends"];
+    RKConnectionDescription *connection = [[RKConnectionDescription alloc] initWithRelationship:relationship attributes:@{ @"friendIDs": @"railsID" }];
+    connection.includesSubentities = YES;
+
+    RKHuman *human = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:nil];
+    human.railsID = @(12345);
+    RKChild *child = [RKTestFactory insertManagedObjectForEntityForName:@"Child" inManagedObjectContext:nil withProperties:nil];
+    child.railsID = @(12345);
+
+    RKChild *secondChild = [RKTestFactory insertManagedObjectForEntityForName:@"Child" inManagedObjectContext:nil withProperties:nil];
+    secondChild.friendIDs = @[ @(12345) ];
+
+    RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:secondChild connections:@[ connection ] managedObjectCache:managedObjectCache];
+    [operation start];
+
+    NSSet *expectedFriends = [NSSet setWithObjects:human, child, nil];
+    expect(secondChild.friends).to.equal(expectedFriends);
+}
+
+- (void)testNotConnectingToSubentities
+{
+    RKManagedObjectStore *managedObjectStore = [RKTestFactory managedObjectStore];
+    NSEntityDescription *childEntity = [NSEntityDescription entityForName:@"Child" inManagedObjectContext:managedObjectStore.persistentStoreManagedObjectContext];
+    NSRelationshipDescription *relationship = [childEntity relationshipsByName][@"friends"];
+    RKConnectionDescription *connection = [[RKConnectionDescription alloc] initWithRelationship:relationship attributes:@{ @"friendIDs": @"railsID" }];
+    connection.includesSubentities = NO;
+
+    RKHuman *human = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:nil];
+    human.railsID = @(12345);
+    RKChild *child = [RKTestFactory insertManagedObjectForEntityForName:@"Child" inManagedObjectContext:nil withProperties:nil];
+    child.railsID = @(12345);
+
+    RKChild *secondChild = [RKTestFactory insertManagedObjectForEntityForName:@"Child" inManagedObjectContext:nil withProperties:nil];
+    secondChild.friendIDs = @[ @(12345) ];
+
+    RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:secondChild connections:@[ connection ] managedObjectCache:managedObjectCache];
+    [operation start];
+
+    NSSet *expectedFriends = [NSSet setWithObjects:human, nil];
+    expect(secondChild.friends).to.equal(expectedFriends);
+}
+
+- (void)testConnectionWithSourcePredicate
+{
+    RKHuman *human = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:nil];
+    human.sex = @"female";
+    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:nil];
+    asia.sex = @"female";
+    RKCat *lola = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:nil];
+    lola.sex = @"female";
+    RKCat *roy = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:nil];
+    roy.sex = @"male";
+    
+    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    [mapping addConnectionForRelationship:@"cats" connectedBy:@"sex"];
+    RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
+    RKConnectionDescription *connection = [mapping connectionForRelationship:@"cats"];
+    connection.sourcePredicate = [NSPredicate predicateWithFormat:@"sex == %@", @"male"];
+    
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
+    [operation start];
+    assertThat(human.cats, hasCountOf(0));
+}
+
+- (void)testConnectionWithDestinationPredicate
+{
+    RKHuman *human = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:nil];
+    human.sex = @"female";
+    
+    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{@"birthYear": @2011}];
+    asia.sex = @"female";
+    RKCat *lola = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{@"birthYear": @2012}];
+    lola.sex = @"female";
+    
+    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    [mapping addConnectionForRelationship:@"cats" connectedBy:@"sex"];
+    RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
+    RKConnectionDescription *connection = [mapping connectionForRelationship:@"cats"];
+    connection.destinationPredicate = [NSPredicate predicateWithFormat:@"birthYear = 2011"];
+       
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
+    [operation start];
+    assertThat(human.cats, hasCountOf(1));
+    assertThat(human.cats, hasItems(asia, nil));
+}
+
+- (void)testConnectionOfOptionalRelationshipIsSkippedWhenAllConnectionAttributesEvaluateToNil
+{
+    RKHuman *human = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:nil];
+    RKCat __unused *asia = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{@"birthYear": @2011}];
+    RKCat __unused *lola = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{@"birthYear": @2012}];
+    
+    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    [mapping addConnectionForRelationship:@"cats" connectedBy:@"sex"];
+    RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
+    RKConnectionDescription *connection = [mapping connectionForRelationship:@"cats"];
+    
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
+    [operation start];
+    assertThat(human.cats, hasCountOf(0));
+}
+
+- (void)testConnectionOfOptionalRelationshipIsEvaluatedWhenAtLeastOneAttributeEvaluatesToNonNil
+{
+    RKHuman *human = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:nil];
+    human.sex = @"female";
+    
+    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{@"birthYear": @2011}];
+    asia.sex = @"female";
+    asia.name = @"Asia";
+    RKCat *lola = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{@"birthYear": @2012}];
+    lola.sex = @"female";
+    lola.name = nil;
+    
+    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    [mapping addConnectionForRelationship:@"cats" connectedBy:@[ @"sex", @"name" ]];
+    RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
+    RKConnectionDescription *connection = [mapping connectionForRelationship:@"cats"];
+    
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
+    [operation start];
+    assertThat(human.cats, hasCountOf(1));
+    assertThat(human.cats, hasItems(lola, nil));
+}
+
+- (void)testConnectionOfOptionalRelationshipIsSkippedWhenAllAttributesEvaluateToNil
+{
+    RKHuman *human = [RKTestFactory insertManagedObjectForEntityForName:@"Human" inManagedObjectContext:nil withProperties:nil];
+    
+    RKCat *asia = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{@"birthYear": @2011}];
+    asia.sex = @"female";
+    asia.name = @"Asia";
+    RKCat *lola = [RKTestFactory insertManagedObjectForEntityForName:@"Cat" inManagedObjectContext:nil withProperties:@{@"birthYear": @2012}];
+    lola.sex = @"female";
+    lola.name = nil;
+    
+    human.cats = [NSSet setWithObject:asia];
+    
+    RKEntityMapping *mapping = [RKEntityMapping mappingForEntityForName:@"Human" inManagedObjectStore:[RKTestFactory managedObjectStore]];
+    [mapping addConnectionForRelationship:@"cats" connectedBy:@[ @"sex", @"name" ]];
+    RKFetchRequestManagedObjectCache *managedObjectCache = [RKFetchRequestManagedObjectCache new];
+    RKConnectionDescription *connection = [mapping connectionForRelationship:@"cats"];
+    
+    RKRelationshipConnectionOperation *operation = [[RKRelationshipConnectionOperation alloc] initWithManagedObject:human connections:@[ connection ] managedObjectCache:managedObjectCache];
+    [operation start];
+    
+    // Operation should be skipped due to lack of connectable attributes
+    assertThat(human.cats, hasCountOf(1));
+    assertThat(human.cats, hasItems(asia, nil));
 }
 
 @end

@@ -9,6 +9,16 @@
 #import "RKTestUser.h"
 #import "RKLog.h"
 
+@implementation RKTestCoordinate
+
+- (BOOL)isEqual:(id)object
+{
+    if (! [object isKindOfClass:[RKTestCoordinate class]]) return NO;
+    return [object latitude] == self.latitude && [object longitude] == self.longitude;
+}
+
+@end
+
 @implementation RKTestUser
 
 + (RKTestUser *)user
@@ -25,7 +35,7 @@
             // No primary key -- consult superclass
             return [super isEqual:object];
         } else {
-            return [[(RKTestUser *)object userID] isEqualToNumber:self.userID];
+            return self.userID && [[(RKTestUser *)object userID] isEqualToNumber:self.userID];
         }
     }
 

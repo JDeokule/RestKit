@@ -40,7 +40,7 @@
  @param pathString The string to evaluate and parse, such as `/districts/tx/upper/?apikey=GC5512354`
  @return An instantiated `RKPathMatcher` without an established pattern.
  */
-+ (RKPathMatcher *)pathMatcherWithPath:(NSString *)pathString;
++ (instancetype)pathMatcherWithPath:(NSString *)pathString;
 
 /**
  Determines if the path string matches the provided pattern, and yields a dictionary with the resulting matched key/value pairs.  Use of this method should be preceded by `pathMatcherWithPath:` Pattern strings should include encoded parameter keys, delimited by a single colon at the beginning of the key name.
@@ -74,7 +74,7 @@
  @param patternString The pattern to use for evaluating, such as `/:entityName/:stateID/:chamber/`
  @return An instantiated `RKPathMatcher` with an established pattern.
  */
-+ (RKPathMatcher *)pathMatcherWithPattern:(NSString *)patternString;
++ (instancetype)pathMatcherWithPattern:(NSString *)patternString;
 
 /**
  Determines if the given path string matches a pattern, and yields a dictionary with the resulting matched key/value pairs.  Use of this method should be preceded by `pathMatcherWithPattern:`.
@@ -96,16 +96,17 @@
  For example, given an 'article' object with an 'articleID' property value of 12345 and a code of "This/That"...
 
      RKPathMatcher *matcher = [RKPathMatcher pathMatcherWithPattern:@"/articles/:articleID/:code"];
-     NSString *path = [matcher pathFromObject:article addingEscapes:YES];
+     NSString *path = [matcher pathFromObject:article addingEscapes:YES interpolatedParameters:nil];
 
  ... will produce a 'path' containing the string `@"/articles/12345/This%2FThat"`
 
  @param object The object containing the properties to interpolate.
  @param addEscapes Conditionally add percent escapes to the interpolated property values
+ @param interpolatedParameters On input, a pointer for a dictionary object. When the path pattern of the receiver is interpolated, this pointer is set to a new dictionary object in which the keys correspond to the named parameters within the path pattern and the values are taken from the corresponding keypaths of the interpolated object .
  @return A string with the object's interpolated property values inserted into the receiver's established pattern.
  @see `RKRouter`
  */
-- (NSString *)pathFromObject:(id)object addingEscapes:(BOOL)addEscapes;
+- (NSString *)pathFromObject:(id)object addingEscapes:(BOOL)addEscapes interpolatedParameters:(NSDictionary **)interpolatedParameters;
 
 ///-------------------------------------------
 /// @name Accessing Tokenized Query Parameters

@@ -18,7 +18,7 @@
 //  limitations under the License.
 //
 
-#import <RestKit/Network.h>
+#import "Network.h"
 #import "RKRouter.h"
 #import "RKPaginator.h"
 #import "RKMacros.h"
@@ -85,7 +85,11 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  Once a path pattern has been registered via the routing system, the manager can automatically build full request URL's when given nothing but the object to be sent.
  
- The second use case of path patterns is in the matching of path into a dictionary of attributes. In this case, the path pattern is evaluatd against a string and used to construct an `NSDictionary` object containing the matched key paths, optionally including the values of a query string. This functionality is provided via the `RKPathMatcher` class and is discussed in detail in the accompanying documentation.  
+ The second use case of path patterns is in the matching of path into a dictionary of attributes. In this case, the path pattern is evaluatd against a string and used to construct an `NSDictionary` object containing the matched key paths, optionally including the values of a query string. This functionality is provided via the `RKPathMatcher` class and is discussed in detail in the accompanying documentation.
+ 
+ ### Escaping Path Patterns
+ 
+ Note that path patterns will by default interpret anything prefixed with a period that follows a dynamic path segment as a key path. This can cause an issue if you have a dynamic path segment that is followed by a file extension. For example, a path pattern of '/categories/:categoryID.json' would be erroneously interpretted as containing a dynamic path segment whose value is interpolated from the 'categoryID.json' key path. This key path evaluation behavior can be suppressed by escaping the period preceding the non-dynamic part of the pattern with two leading slashes, as in '/categories/:categoryID\\.json'.
  
  ## Request and Response Descriptors
  
@@ -142,6 +146,15 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  In the above example, request and response mapping configurations were described for a simple data model and then used to perform a basic POST operation and map the results. An arbitrary number of request and response descriptors may be added to the manager to accommodate your application's needs.
  
+ ## Multi-object Parameterization
+
+ The object manager provides support for the parameterization of multiple objects provided as an array. The `requestWithObject:method:path:parameters:` and `multipartFormRequestWithObject:method:path:parameters:constructingBodyWithBlock:` methods can parameterize an array of objects for you provided that the `RKRequestDescriptor` objects are configured in a compatible way. The rules for multi-object parameterization are simple:
+
+ 1. If a `nil` root key path is used, then it must be used for all objects in the array. This is because the objects will be parameterized into a dictionary and then each dictionary will be added to an array. This array is then serialized for transport, so objects parameterized to a non-nil key path cannot be merged with the array.
+ 1. If a `nil` root key path is used to parameterize the array of objects, then you cannot provide additional parameters to be merged with the request. This is again because you cannot merge a dictionary with an array.
+
+ If non-nil key paths are used, then each object will be set in the parameters dictionary at the specified key path. If more than one object uses the same root key path, then the parameters will be combined into an array for transport.
+
  ## MIME Types
  
  MIME Types serve an important function to the object manager. They are used to identify how content is to be serialized when constructing request bodies and also used to set the 'Accept' header for content negotiation. RestKit aspires to be content type agnostic by leveraging the pluggable `RKMIMESerialization` class to handle content serialization and deserialization.
@@ -189,6 +202,15 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  Please see the documentation for `RKRouter`, `RKRouteSet`, and `RKRoute` for more details about the routing classes.
  
+ ## Metadata Mapping
+ 
+ The `RKObjectManager` class has integrated support for metadata mapping. Metdata mapping enables the object mapping of supplemental information external to the object representation loaded via an HTTP response. Object request operations constructed by the manager make the following metadata key paths available for mapping:
+ 
+ 1. `@metadata.routing.parameters` - A dictionary whose keys are the key paths matched from the path pattern of the `RKRoute` object used to construct the request URL and whose values are taken by evaluating the key path against the object interpolated with the route. Only available when routing was used to construct the request URL.
+ 1. `@metadata.routing.route` - The route object used to construct the request URL.
+ 
+ Please refer to the documentation accompanying `RKMappingOperation` for more details on metadata mapping.
+ 
  ## Core Data
  
  RestKit features deep integration with Apple's Core Data persistence framework. The object manager provides access to this integration by creating `RKManagedObjectRequestOperation` objects when an attempt is made to interact with a resource that has been mapped using an `RKEntityMapping`. To utilize the Core Data integration, the object manager must be provided with a fully configured `RKManagedObjectStore` object. The `RKManagedObjectStore` provides access to the `NSManagedObjectModel` and `NSManagedObjectContext` objects required to peform object mapping that targets a Core Data entity.
@@ -227,7 +249,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  @return The shared manager instance.
  */
-+ (RKObjectManager *)sharedManager;
++ (instancetype)sharedManager;
 
 /**
  Set the shared instance of the object manager
@@ -248,7 +270,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  @param baseURL The base URL with which to initialize the `AFHTTPClient` object
  @return A new `RKObjectManager` initialized with an `AFHTTPClient` that was initialized with the given baseURL.
  */
-+ (id)managerWithBaseURL:(NSURL *)baseURL;
++ (instancetype)managerWithBaseURL:(NSURL *)baseURL;
 
 /**
  Initializes the receiver with the given AFNetworking HTTP client object, adopting the network configuration from the client.
@@ -389,7 +411,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  Creates an `RKObjectRequestOperation` with a `GET` request for the relationship with the given name of the given object, and enqueues it to the manager's operation queue.
  
- @param relationshipName The name of the relationship being loaded. Used to retrieve the `RKRoute` object from the router for the given object's class and the relationship name. Cannot be nil.
+ @param relationship The name of the relationship being loaded. Used to retrieve the `RKRoute` object from the router for the given object's class and the relationship name. Cannot be nil.
  @param object The object for which related objects are being loaded. Evaluated against the `RKRoute` for the relationship for the object's class with the given name to compute the path. Cannot be nil.
  @param method The HTTP method for the request.
  @param parameters The parameters to be encoded and appended as the query string for the request URL, or parameterized and set as the request body. May be nil.
@@ -408,19 +430,28 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
 ///-----------------------------------------
 
 /**
- Sets the `RKHTTPRequestOperation` subclass to be used when constructing HTTP request operations for requests dispatched through the manager.
+ Attempts to register a subclass of `RKHTTPRequestOperation` or `RKObjectRequestOperation`, adding it to a list of classes that are consulted each time the receiver needs to construct an HTTP or object request operation with a URL request.
  
- When set, an instance of the given class will be initialized via `initWithRequest:` each time that the receiver constructs an HTTP request operation. HTTP request operations are used to initialize instances of `RKObjectRequestOperation` and are responsible for managing the HTTP request/response lifecycle of a request whose response is destined to be object mapped. Providing a subclass implementation of `RKHTTPRequestOperation` allows the behavior of all requests sent through the manager to be changed.
+ When `objectRequestOperationWithRequest:success:failure:` or `managedObjectRequestOperationWithRequest:managedObjectContext:success:failure:` is invoked, each registered subclass is consulted to see if it can handle the request. The first class to return `YES` when sent a `+ canProcessRequest:` message is used to create an operation using `initWithHTTPRequestOperation:responseDescriptors:`. The type of HTTP request operation used to initialize the object request operation is determined by evaluating the subclasses of `RKHTTPRequestOperation` registered via `registerRequestOperationClass:` and defaults to `RKHTTPRequestOperation`.
  
- @param operationClass A class object inheriting from `RKHTTPRequestOperation` to be used for HTTP requests dispatched through the manager.
- @raises `NSInvalidArgumentException` Raised if the given class does not inherit from `RKHTTPRequestOperation`.
- @see `RKHTTPRequestOperation`
- @warning The given class must inherit from `RKHTTPRequestOperation`, else an exception will be raised.
+ There is no guarantee that all registered classes will be consulted. The object manager will only consider direct subclasses of `RKObjectRequestOperation` when `objectRequestOperationWithRequest:success:failure` is called and will only consider subclasses of `RKManagedObjectRequestOperation` when `managedObjectRequestOperationWithRequest:managedObjectContext:success:failure:` is called. If you wish to map a mixture of managed and unmanaged objects within the same object request operation you must register a `RKManagedObjectRequestOperation` subclass. Classes are consulted in the reverse order of their registration. Attempting to register an already-registered class will move it to the top of the list.
+ 
+ @param operationClass The subclass of `RKHTTPRequestOperation` or `RKObjectRequestOperation` to register.
+ @return `YES` if the given class was registered successfully, else `NO`. The only failure condition is if `operationClass` is not a subclass of `RKHTTPRequestOperation` or `RKObjectRequestOperation`.
  */
-- (void)setHTTPOperationClass:(Class)operationClass;
+- (BOOL)registerRequestOperationClass:(Class)operationClass;
+
+/**
+ Unregisters the specified subclass of `RKHTTPRequestOperation` or `RKObjectRequestOperation` from the list of classes consulted when `objectRequestOperationWithRequest:success:failure:` or `managedObjectRequestOperationWithRequest:managedObjectContext:success:failure:` is called.
+ 
+ @param operationClass The subclass of `RKHTTPRequestOperation` or `RKObjectRequestOperation` to unregister.
+ */
+- (void)unregisterRequestOperationClass:(Class)operationClass;
 
 /**
  Creates an `RKObjectRequestOperation` operation with the given request and sets the completion block with the given success and failure blocks.
+ 
+ In order to determine what kind of operation is created, each registered `RKObjectRequestOperation` subclass is consulted (in reverse order of when they were specified) to see if it can handle the specific request. The first class to return `YES` when sent a `canProcessRequest:` message is used to create an operation using `initWithHTTPRequestOperation:responseDescriptors:`. The type of HTTP request operation used to initialize the object request operation is determined by evaluating the subclasses of `RKHTTPRequestOperation` registered via `registerRequestOperationClass:` and defaults to `RKHTTPRequestOperation`.
  
  @param request The request object to be loaded asynchronously during execution of the operation.
  @param success A block object to be executed when the request operation finishes successfully. This block has no return value and takes two arguments: the created object request operation and the `RKMappingResult` object created by object mapping the response data of request.
@@ -437,6 +468,8 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  Creates an `RKManagedObjectRequestOperation` operation with the given request and managed object context, and sets the completion block with the given success and failure blocks.
  
  The given managed object context given will be used as the parent context of the private managed context in which the response is mapped and will be used to fetch the results upon invocation of the success completion block.
+ 
+ In order to determine what kind of operation is created, each registered `RKManagedObjectRequestOperation` subclass is consulted (in reverse order of when they were specified) to see if it can handle the specific request. The first class to return `YES` when sent a `canProcessRequest:` message is used to create an operation using `initWithHTTPRequestOperation:responseDescriptors:`. The type of HTTP request operation used to initialize the object request operation is determined by evaluating the subclasses of `RKHTTPRequestOperation` registered via `registerRequestOperationClass:` and defaults to `RKHTTPRequestOperation`.
  
  @param request The request object to be loaded asynchronously during execution of the operation.
  @param managedObjectContext The managed object context with which to associate the operation. This context will be used as the parent context of a new operation local `NSManagedObjectContext` with the `NSPrivateQueueConcurrencyType` concurrency type. Upon success, the private context will be saved and changes resulting from the object mapping will be 'pushed' to the given context.
@@ -488,6 +521,18 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  @param objectRequestOperation The object request operation to be enqueued.
  */
 - (void)enqueueObjectRequestOperation:(RKObjectRequestOperation *)objectRequestOperation;
+
+/**
+ Returns an array of operations in the object manager's operation queue whose requests match the specified HTTP method and path pattern.
+ 
+ Paths are matches against the `path` of the `NSURL` of the `NSURLRequest` of each `RKObjectRequestOperation` contained in the receiver's operation queue using a `RKPathMatcher` object.
+ 
+ @param method The HTTP method to match for the cancelled requests, such as `RKRequestMethodGET`, `RKRequestMethodPOST`, `RKRequestMethodPUT`, `RKRequestMethodPatch`, or `RKRequestMethodDELETE`. If `RKRequestMethodAny`, all object request operations with URLs matching the given path pattern will be cancelled. Multiple methods may be specified by using a bitwise OR operation.
+ @param pathPattern The pattern to match against the path of the request URL for executing object request operations considered for cancellation.
+ @return A new array containing all enqueued `RKObjectRequestOperation` objects that match the given HTTP method and path pattern.
+ @see `RKPathMatcher`
+ */
+- (NSArray *)enqueuedObjectRequestOperationsWithMethod:(RKRequestMethod)method matchingPathPattern:(NSString *)pathPattern;
 
 /**
  Cancels all operations in the object manager's operation queue whose requests match the specified HTTP method and path pattern.
@@ -609,7 +654,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  The type of object request operation created is determined by invoking `appropriateObjectRequestOperationWithObject:method:path:parameters:`.
  
- @param object The object with which to construct the object request operation. Cannot be nil.
+ @param object The object with which to construct the object request operation. If `nil`, then the path must be provided.
  @param path The path to be appended to the HTTP client's base URL and used as the request URL. If nil, the request URL will be obtained by consulting the router for a route registered for the given object's class and the `RKRequestMethodGET` request method.
  @param parameters The parameters to be encoded and appended as the query string for the request URL.
  @param success A block object to be executed when the object request operation finishes successfully. This block has no return value and takes two arguments: the created object request operation and the `RKMappingResult` object created by object mapping the response data of request.
@@ -627,7 +672,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
 /**
  Creates an `RKObjectRequestOperation` with a `POST` request for the given object, and enqueues it to the manager's operation queue.
  
- @param object The object with which to construct the object request operation. Cannot be nil.
+ @param object The object with which to construct the object request operation. If `nil`, then the path must be provided.
  @param path The path to be appended to the HTTP client's base URL and used as the request URL. If nil, the request URL will be obtained by consulting the router for a route registered for the given object's class and the `RKRequestMethodPOST` method.
  @param parameters The parameters to be reverse merged with the parameterization of the given object and set as the request body.
  @param success A block object to be executed when the object request operation finishes successfully. This block has no return value and takes two arguments: the created object request operation and the `RKMappingResult` object created by object mapping the response data of request.
@@ -645,7 +690,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
 /**
  Creates an `RKObjectRequestOperation` with a `PUT` request for the given object, and enqueues it to the manager's operation queue.
  
- @param object The object with which to construct the object request operation. Cannot be nil.
+ @param object The object with which to construct the object request operation. If `nil`, then the path must be provided.
  @param path The path to be appended to the HTTP client's base URL and used as the request URL. If nil, the request URL will be obtained by consulting the router for a route registered for the given object's class and the `RKRequestMethodPUT` method.
  @param parameters The parameters to be reverse merged with the parameterization of the given object and set as the request body.
  @param success A block object to be executed when the object request operation finishes successfully. This block has no return value and takes two arguments: the created object request operation and the `RKMappingResult` object created by object mapping the response data of request.
@@ -663,7 +708,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
 /**
  Creates an `RKObjectRequestOperation` with a `PATCH` request for the given object, and enqueues it to the manager's operation queue.
  
- @param object The object with which to construct the object request operation. Cannot be nil.
+ @param object The object with which to construct the object request operation. If `nil`, then the path must be provided.
  @param path The path to be appended to the HTTP client's base URL and used as the request URL. If nil, the request URL will be obtained by consulting the router for a route registered for the given object's class and the `RKRequestMethodPATCH` method.
  @param parameters The parameters to be reverse merged with the parameterization of the given object and set as the request body.
  @param success A block object to be executed when the object request operation finishes successfully. This block has no return value and takes two arguments: the created object request operation and the `RKMappingResult` object created by object mapping the response data of request.
@@ -683,7 +728,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
  
  The type of object request operation created is determined by invoking `appropriateObjectRequestOperationWithObject:method:path:parameters:`.
  
- @param object The object with which to construct the object request operation. Cannot be nil.
+ @param object The object with which to construct the object request operation. If `nil`, then the path must be provided.
  @param path The path to be appended to the HTTP client's base URL and used as the request URL. If nil, the request URL will be obtained by consulting the router for a route registered for the given object's class and the `RKRequestMethodDELETE` request method.
  @param parameters The parameters to be encoded and appended as the query string for the request URL.
  @param success A block object to be executed when the object request operation finishes successfully. This block has no return value and takes two arguments: the created object request operation and the `RKMappingResult` object created by object mapping the response data of request.
@@ -787,7 +832,7 @@ RKMappingResult, RKRequestDescriptor, RKResponseDescriptor;
 /**
  Adds the given `RKFetchRequestBlock` block to the manager.
  
- @param A block object to be executed when constructing an `NSFetchRequest` object from a given `NSURL`. The block has a return type of `NSFetchRequest` and accepts a single `NSURL` argument.
+ @param block A block object to be executed when constructing an `NSFetchRequest` object from a given `NSURL`. The block has a return type of `NSFetchRequest` and accepts a single `NSURL` argument.
  */
 - (void)addFetchRequestBlock:(RKFetchRequestBlock)block;
 
